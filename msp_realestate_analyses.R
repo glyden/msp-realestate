@@ -11,20 +11,23 @@ library(splines)
 #### so, variables used from this dataset should
 #### be used cautiously as they may not reflect
 #### what was actually there during the last sale
-all_mpls <- read.csv('./Assessors_Parcel_Data_2022.csv',na.strings="") %>%
+all_mpls <- read.csv('Assessors_Parcel_Data_2022.csv',na.strings="",
+                     skipNul=T) %>%
   mutate(APN = as.numeric(gsub(pattern = 'p', replacement = '', PIN))) %>%
   mutate(square_feet = ABOVEGROUNDAREA,
-         sqft_hundred = 100*floor(square_feet/100),
+         sqft_hundred = square_feet/100,
          built_decade = 10*(floor(YEARBUILT/10)),
          Baths = BATHROOMS,
          neighborhood = tolower(NEIGHBORHOOD),
          Year.Built = YEARBUILT)
   # left_join(msp_sales %>% select(APN, square_feet) %>% mutate(APN = as.character(paste0('0', APN)),in_sales = TRUE))
-
+all_mpls %>% select(ABOVEGROUNDAREA,BELOWGROUNDAREA,square_feet,sqft_hundred,
+                    YEARBUILT,built_decade,BATHROOMS,Baths,neighborhood) %>%
+  head()
 
 #### Note Here, APN can be duplicated, so be careful when joining on APN,
 #### Even though it seems to be the ID variable
-sum(duplicated(all_mpls$APN))
+sum(duplicated(all_mpls$APN)) # no duplicates
 
 
 # Additional variables in the Assessors Data
@@ -34,13 +37,21 @@ sum(duplicated(all_mpls$APN))
 
 
 #### Sales Data from the Neighborhood sales finder app
-msp_sales <- read.csv('./mpls_sales_2002-2022.csv') %>% 
-  read.csv('./mpls_sales_OctNov_2022.csv') %>%
+msp_sales <- read.csv('mpls_sales_2002-2022.csv') %>% 
+  bind_rows(read.csv('mpls_sales_OctNov_2022.csv')) %>%
   bind_rows(read.csv('./mpls_sales_Dec_2022.csv')) %>%
   bind_rows(read.csv('./mpls_sales_Jan_2023.csv')) %>%
   bind_rows(read.csv('./mpls_sales_Feb_2023.csv')) %>%
-  # 46268 Records
-  rename('square_feet' = 'Building.Area..Sq..Ft..') %>%
+  rename('square_feet' = 'Building.Area..Sq..Ft..') %>% # above ground
+  select(-X) %>%
+  distinct()
+nrow(msp_sales) # 46470
+head(msp_sales)
+sum(duplicated(msp_sales$X)) # don't need this duplicated row number
+sum(duplicated(msp_sales$APN)) # sales of same home
+which(duplicated(msp_sales$APN))[1]
+msp_sales %>% filter(APN==1202924210097) # seems like an error but maybe duplex
+msp_sales = msp_sales %>%
   # select(APN, Address, square_feet, Sales.Date, Sales.Price) %>%
   #mutate(APN = as.character(paste0('0', APN))) %>%
   left_join(all_mpls %>%
@@ -100,6 +111,8 @@ resales <- msp_sales %>%
   summarize(n_sales = n()) %>%
   ungroup %>%
   filter(n_sales > 1)
+head(resales)
+resales %>% nrow()
 
 # In the 20 years from Jan 1, 2002 to Oct 31 2022, there were 44139 single family
 # homes that were sold only once
@@ -268,14 +281,34 @@ for(i in 1:length(q_names)){
 
 colnames(msp_sales)
 
-mod1 <- lm(Sales.Price ~ ns(square_feet, df = 5) + ns(Baths, df = 5) + 
+## fit model
+# note: above-ground square feet (building area) from neighborhood sales app
+# from assessor:
+# PRIMARYHEATING, CONSTRUCTIONTYPE, EXTERIORTYPE, ROOF, TOTAL_UNITS, FIREPLACES, NUM_BLDGS
+mod1 <- lm(Sales.Price ~ ns(square_feet, df = 4) + factor(Baths) + 
              ns(Year.Built, df = 5) + 
-             factor(sale_quarter) + factor(neighborhood),
-           data = msp_sales %>% filter(sale_date >= lubridate::mdy('03/13/2020')))
+             factor(sale_quarter) + factor(neighborhood) +
+             factor(Beds) + ns(BELOWGROUNDAREA, df=3) +
+             factor(NUM_GAR_STALLS) + factor(PRIMARYHEATING) +
+             I(FIREPLACES > 0) + #factor(Sales.Month) +
+             factor(EXTERIORTYPE),
+           data = msp_sales %>% filter(sale_date >= mdy('03/13/2020'),
+                                       TOTAL_UNITS == 1,
+                                       Baths <= 4,
+                                       Beds %in% 1:5))
+summary(mod1) # good R^2
+nobs(mod1)
+plot(x=1:12,y=coef(mod1)[grepl("sale_quarter",names(coef(mod1)))])
+termplot(mod1)
 
-pred1 <- all_mpls %>%
-  filter(HOUSE_NO == '4323',
-         grepl(pattern = 'GARFIELD', x = STREET_NAME)) %>%
-  mutate(sale_quarter = 20231)
+msp_sales %>% 
+  filter(Address=="4323 GARFIELD AVE") 
+pred1 = msp_sales %>% 
+  filter(Address=="4323 GARFIELD AVE") %>%
+  select(square_feet,Year.Built,neighborhood,Beds,BELOWGROUNDAREA,
+         NUM_GAR_STALLS,PRIMARYHEATING,FIREPLACES,EXTERIORTYPE) %>%
+  mutate(Baths = 3,sale_quarter="20223",#"20231",
+         Sales.Month=5)
 
+predict(mod1, newdata = pred1, type = "terms")
 predict(mod1, newdata = pred1, interval = "prediction")
